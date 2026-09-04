@@ -1,3 +1,3 @@
 # Lorewalking Helper
 
-# Instructions to come
+Instructions to come
