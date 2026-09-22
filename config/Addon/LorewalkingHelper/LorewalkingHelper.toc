@@ -1,11 +1,12 @@
 ## Interface: 120100
 ## Title: |cffF35F05LorewalkingHelper|r
-## Author: G
-## Version: v1.0.0
+## Author: Glacerr
+## Version: v1.1.0
 ## Category: Quests
-## Notes: Assists with the Lorewalking Loa Campaign
+## Notes: Assists with the Lorewalking Loa campaign
 ## X-Curse-Project-ID: 1234567
 ## X-Website: https://www.curseforge.com/wow/addons/lorewalkinghelper
+## X-Repo: https://github.com/Glacerr/LorewalkingHelper
 ## DefaultState: Disabled
 ## LoadOnDemand: 0
 ## SavedVariablesPerCharacter: LorewalkingHelperDB
