@@ -34,7 +34,6 @@ param (
     $usePi          = $False, # If using a raspberry pi pico, set to $True. Pi is safer for hardware input. Costs 4$ USD, pretty worth.
     $picoComPort    = "AUTO", # set to pi pico com port if using a pi. Manually set com port if you need (ie: "COM3"), otherwise leave at "AUTO", and it will try to auto-detect
     $wowInstallPath = "AUTO", # Manually set your wow install path if the "AUTO" detection does not detect it properly. ie: "C:\Program Files (x86)\World of Warcraft"
-    $questXpModifier = 0,     # Percentage bonus (eg: warmode/warband/etc) added on top of the base XpPerQuest values in $script:levelXpTable when estimating leveling ETAs.
 
     ### Main Lorewalking Helper Addon Settings ###
     $PrimaryKeybind  = "F12", # Primary Keybind that the LorewalkingHelper addon is set to with in-game command: /lw keybind <keybind>
@@ -101,8 +100,8 @@ function Write-GuiEvent {
     [Console]::Out.WriteLine(($Evt | ConvertTo-Json -Compress -Depth 4))
 }
 
-# Base (no bonus XP) values for XP (as of Midnight patch 12.1) gained per quest and XP required to reach the next level.
-# $questXpModifier applies any warmode/warband/etc bonus % on top of these when estimating leveling ETAs.
+# Fallback level thresholds for the remaining XP calculation.
+# When sufficient live XP deltas are available from OCR, ETA estimates use those observed quest gains instead.
 # 4,963,065 Total XP For 80-90
 $script:levelXpTable = @{
     80 = @{ XpPerQuest = 11750; XpToNext = 403725 }
@@ -116,49 +115,47 @@ $script:levelXpTable = @{
     88 = @{ XpPerQuest = 12850; XpToNext = 570590 }
     89 = @{ XpPerQuest = 13000; XpToNext = 592980 }
 }
-$script:totalQuestTime = [TimeSpan]::Zero
+$script:lastQuestTime = [TimeSpan]::Zero
 
-# Sends the GUI's live "Statistics" footer values: current level, quests completed, average time per
-# quest, and ETA to the next level / max level, derived from $script:levelXpTable above.
+# Sends the GUI's live "Statistics" footer values: current level, quests completed, latest time per
+# quest, and ETA to the next level / max level. XP-per-quest is estimated from the actual delta in XP
+# observed from the OCR values, so we can avoid relying on a hardcoded quest XP table or a modifier.
 function Update-LevelingStats {
 
-    $avgTimePerQuest = if ($script:count -gt 0) {
-        [TimeSpan]::FromTicks([long]($script:totalQuestTime.Ticks / $script:count))
-    } else {
-        [TimeSpan]::Zero
-    }
+    $lastQuestTime = $script:lastQuestTime
 
     $etaNextLevel = $Null
     $etaMaxLevel  = $Null
     $level = [int]$script:currentLevel
-    $xpModifier = 1 + ([double]$questXpModifier / 100)
 
     if ($level -ge $currentMaxLevel) {
         $etaNextLevel = [TimeSpan]::Zero
         $etaMaxLevel  = [TimeSpan]::Zero
-    } elseif ($script:levelXpTable.ContainsKey($level) -and $avgTimePerQuest -gt [TimeSpan]::Zero) {
-        # Subtract XP already earned toward this level so the ETA reflects only the XP remaining
+    } elseif ($script:levelXpTable.ContainsKey($level) -and $lastQuestTime -gt [TimeSpan]::Zero) {
+        $estimatedXpPerQuest = if ($Script:xpPerQuest -gt 0) { [double]$Script:xpPerQuest } else { [double]$script:levelXpTable[$level].XpPerQuest }
+
+        # Subtract XP already earned toward this level so the ETA reflects only the XP remaining.
         $xpRemainingThisLevel = [Math]::Max(0, $script:levelXpTable[$level].XpToNext - [double]$script:currentXP)
-        $questsToNext = [Math]::Ceiling($xpRemainingThisLevel / ($script:levelXpTable[$level].XpPerQuest * $xpModifier))
-        $etaNextLevel = [TimeSpan]::FromTicks([long]($avgTimePerQuest.Ticks * $questsToNext))
+        $questsToNext = [Math]::Ceiling($xpRemainingThisLevel / $estimatedXpPerQuest)
+        $etaNextLevel = [TimeSpan]::FromTicks([long]($lastQuestTime.Ticks * $questsToNext))
 
         $totalQuestsToMax = $questsToNext
         for ($lvl = $level + 1; $lvl -lt $currentMaxLevel; $lvl++) {
             if (-not $script:levelXpTable.ContainsKey($lvl)) { continue }
-            $totalQuestsToMax += [Math]::Ceiling($script:levelXpTable[$lvl].XpToNext / ($script:levelXpTable[$lvl].XpPerQuest * $xpModifier))
+            $totalQuestsToMax += [Math]::Ceiling($script:levelXpTable[$lvl].XpToNext / $estimatedXpPerQuest)
         }
-        $etaMaxLevel = [TimeSpan]::FromTicks([long]($avgTimePerQuest.Ticks * $totalQuestsToMax))
+        $etaMaxLevel = [TimeSpan]::FromTicks([long]($lastQuestTime.Ticks * $totalQuestsToMax))
     }
 
-    $script:avgTimePerQuest = $avgTimePerQuest.ToString('hh\:mm\:ss')
+    $script:lastQuestTimeText = $lastQuestTime.ToString('hh\:mm\:ss')
     $script:etaNextLevel = if ($Null -ne $etaNextLevel) { $etaNextLevel.ToString('hh\:mm\:ss') } else { 'Unknown' }
     $script:etaMaxLevel  = if ($Null -ne $etaMaxLevel) { $etaMaxLevel.ToString('hh\:mm\:ss') } else { 'Unknown' }
     
     Write-GuiEvent -Evt @{
         type            = 'stats'
         currentLevel    = $script:currentLevel
-        questsCompleted = $script:count
-        avgTimePerQuest = $script:avgTimePerQuest
+        questsCompleted = "$script:count (${Script:xpPerQuest}/xp per q)"
+        lastQuestTime   = $script:lastQuestTimeText
         etaNextLevel    = $script:etaNextLevel
         etaMaxLevel     = $script:etaMaxLevel
     }
@@ -189,11 +186,19 @@ function Send-Notification {
         [string]$Runtime         = $Null,
         [string]$PicPath         = $Null,
         [string]$CurrentLevel    = $Null,
-        [string]$AvgTimePerQuest = $Null,
+        [string]$LastQuestTime   = $Null,
         [string]$EtaNextLevel    = $Null,
         [string]$EtaMaxLevel     = $Null
 
     )
+
+    $notificationKey = "$Title`n$Desc`n$CurrentLevel"
+    $notificationTime = Get-Date
+    if ($script:lastNotificationKey -eq $notificationKey -and
+        $null -ne $script:lastNotificationTime -and
+        ($notificationTime - $script:lastNotificationTime).TotalMinutes -lt 2) {
+        return
+    }
 
     # Convert friendly color name to Discord decimal color
     $Color = switch ($Color) {
@@ -234,10 +239,10 @@ function Send-Notification {
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($avgTimePerQuest)) {
+    if (-not [string]::IsNullOrWhiteSpace($LastQuestTime)) {
         $fields += @{
-            name   = "Avg time/quest"
-            value  = $avgTimePerQuest
+            name   = "Time per quest"
+            value  = $LastQuestTime
             inline = $True
         }
     }
@@ -288,7 +293,7 @@ function Send-Notification {
     # alt: "https://raw.githubusercontent.com/Glacerr/wow_assets/main/img/world-of-warcraft.png"
     $discordBody = @{
         username   = "Lorewalker Li Li"
-        avatar_url = "https://raw.githubusercontent.com/Glacerr/wow_assets/main/img/lili.png"
+        avatar_url = "https://raw.githubusercontent.com/Glacerr/wow_assets/refs/heads/main/img/lili-128.png"
         embeds     = @($embed)
     } | ConvertTo-Json -Depth 10
 
@@ -321,6 +326,9 @@ function Send-Notification {
         if (-not $response.IsSuccessStatusCode) {
             $responseBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
             Write-AppLog "Failed to send Discord notification: $($response.StatusCode) $responseBody" -ForegroundColor Red
+        } else {
+            $script:lastNotificationKey = $notificationKey
+            $script:lastNotificationTime = Get-Date
         }
     } Catch {
         Write-AppLog "Failed to send Discord notification: $($_.Exception.Message)" -ForegroundColor Red
@@ -395,11 +403,10 @@ function Start-SleepWithProgress([Int]$Seconds, [String]$Activity, [Switch]$nosl
 }
 
 function Get-RunningTime {
-    # Wall-clock based (not Stopwatch) so it keeps counting through system sleep/hibernate, matching the GUI's Session Time
-    $totalSeconds = [Math]::Floor(((Get-Date) - $runStartTime).TotalSeconds)
-    $hours   = [int]($totalSeconds / 3600)
-    $minutes = [int](($totalSeconds % 3600) / 60)
-    $seconds = [int]($totalSeconds % 60)
+    $elapsed = (Get-Date) - $runStartTime
+    $hours = ($elapsed.Days * 24) + $elapsed.Hours
+    $minutes = $elapsed.Minutes
+    $seconds = $elapsed.Seconds
     $parts = @()
 
     if ($hours -gt 0) {
@@ -425,7 +432,7 @@ function Invoke-AutoStop {
             Write-AppLog "Time Limit Reached - Lorewalking Stopped" -ForegroundColor Yellow
             Update-LevelingStats
             Send-Notification -Title "Lorewalking Stopped" -Desc "AutoStop time reached after $($autoStopTime)m" -Runtime $ranFor `
-                              -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                              -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                               -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Red' -PicPath "$path\WoWLorewalkingFull.png"
         }
         
@@ -748,11 +755,26 @@ function Start-Check {
 
                 $ocr -match "xp.*?(\d+)" | Out-Null
                 if ($matches) {
-                    $xp = $matches[1]
+                    $xp = [double]$matches[1]
                     $script:currentXP = $xp
                 }
                 Update-LevelingStats
                 $script:firstUpdate = $False
+            }
+
+            # update xp after each quest turn in
+            if ($word -eq "complete") {
+                $ocr -match "xp.*?(\d+)" | Out-Null
+                if ($matches) {
+                    $xp = [double]$matches[1]
+                    if ($null -ne $script:currentXP -and $xp -gt [double]$script:currentXP) {
+                        $deltaXp = $xp - [double]$script:currentXP
+                        if ($deltaXp -gt 0) {
+                            $Script:xpPerQuest = $deltaXp
+                        }
+                    }
+                    $script:currentXP = $xp
+                }
             }
 
             if ($ocr -like "*$word*") {
@@ -765,7 +787,7 @@ function Start-Check {
                 if ($enableNotifications -and $onStop) {
                     Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                     Send-Notification -Title "Lorewalking Completed" -Desc "CONGRATS!`nYou've reached max level!" -Runtime $ranFor `
-                              -CurrentLevel "90" -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                              -CurrentLevel "90" -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                               -Color 'Green' -PicPath "$path\WoWLorewalkingFull.png"
                 
                 }
@@ -774,6 +796,20 @@ function Start-Check {
                 Update-LevelingStats
                 return
             } elseif ($ocr -like "*ding*") {
+                # xp
+                $ocr -match "xp.*?(\d+)" | Out-Null
+                $ranFor = Get-RunningTime
+                if ($matches) {
+                    $xp = [double]$matches[1]
+                    if ($null -ne $script:currentXP -and $xp -gt [double]$script:currentXP) {
+                        $deltaXp = $xp - [double]$script:currentXP
+                        if ($deltaXp -gt 0) {
+                            $Script:xpPerQuest = $deltaXp
+                        }
+                    }
+                    $script:currentXP = $xp
+                }
+
                 # level
                 $ocr -match "lvl.*?(\d+)" | Out-Null
                 $ranFor = Get-RunningTime
@@ -785,7 +821,7 @@ function Start-Check {
                     if ($enableNotifications -and $onLevelUp) {
                     Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                         Send-Notification -Title "Lorewalking Level Up" -Desc "CONGRATS!`nYou've reached level $level!" -Runtime $ranFor `
-                                          -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                          -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                           -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Green' -PicPath "$path\WoWLorewalkingFull.png"
                     }
                 } else {
@@ -794,19 +830,10 @@ function Start-Check {
                     if ($enableNotifications -and $onLevelUp) {
                         Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                         Send-Notification -Title "Lorewalking Level Up" -Desc "CONGRATS! You've leveled up!" -Runtime $ranFor `
-                                          -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                          -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                           -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Green' -PicPath "$path\WoWLorewalkingFull.png"
                     }
                 }
-                # xp
-                $ocr -match "xp.*?(\d+)" | Out-Null
-                $ranFor = Get-RunningTime
-                if ($matches) {
-                    $xp = $matches[1]
-                    $script:currentXP = $xp
-                    Update-LevelingStats
-                }
-
                 return $true
             } else {
                 # start progress bar, exit early in finally if word is matched
@@ -827,7 +854,7 @@ function Start-Check {
                 if ($enableNotifications -and $onStop) {
                     Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                     Send-Notification -Title "Lorewalking Failed" -Desc "Failsafe triggered 3x. Stopping.`nCheck screenshot for details" -Runtime $ranFor `
-                                      -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                      -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                       -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Red' -PicPath "$path\WoWLorewalkingFull.png"
                 }
                 return
@@ -836,7 +863,7 @@ function Start-Check {
             if ($enableNotifications -and $onError) {
                 Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                 Send-Notification -Title "Lorewalking Failsafe Triggered (${script:failsafeTriggered} of 3)" -Desc "Will try and restart the Lorewalking story.`nCheck screenshot for details." -Runtime $ranFor `
-                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                   -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Yellow' -PicPath "$path\WoWLorewalkingFull.png"
             }
             Write-AppLog "All tries exhausted, but Failsafe is enabled. Will try and restart the Lorewalking story.. (${script:failsafeTriggered} of 3)" -ForegroundColor Yellow
@@ -861,7 +888,7 @@ function Start-Check {
             if ($enableNotifications -and $onStop) {
                 Get-WoWScreenShot -topleftX $screen.full_topLeftX -topLeftY $screen.full_topLeftY -bottomRightX $screen.full_bottomRightX -bottomRightY $screen.full_bottomRightY -picPath "$path\WoWLorewalkingFull.png"
                 Send-Notification -Title "Lorewalking Failed" -Desc "$retryCount unsuccessful checks in a row. Stopping.`nCheck screenshot for details." -Runtime $ranFor `
-                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                   -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Red' -PicPath "$path\WoWLorewalkingFull.png"
             }
             Invoke-AutoStop
@@ -896,7 +923,7 @@ function Start-Lorewalking {
                 $ranFor = Get-RunningTime
                 Update-LevelingStats
                 Send-Notification -Title "Lorewalking Failsafe Successfull" -Desc "Failsafe was able to correct the Lorewalking issue" -Runtime $ranFor `
-                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                                  -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                                   -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Green'
             }
         }
@@ -934,7 +961,7 @@ function Start-Lorewalking {
 
         # clear frame
         Clear-AppLog
-        $script:totalQuestTime += (Get-Date) - $script:loopStartTime
+        $script:lastQuestTime = (Get-Date) - $script:loopStartTime
         $script:count++
         Update-LevelingStats
         # needs 1 itteration to get quest time for stats
@@ -942,7 +969,7 @@ function Start-Lorewalking {
             if ($enableNotifications -and $onStart) {
             $ranFor = Get-RunningTime
             Send-Notification -Title "Lorewalking Stats" -Desc "Initial stats and ETA's" -Runtime $ranFor `
-                              -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -AvgTimePerQuest $script:avgTimePerQuest `
+                              -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                               -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Green'
             $script:firstStat = $False
             }

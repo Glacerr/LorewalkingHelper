@@ -152,7 +152,6 @@ function Get-DefaultSettings {
         UsePi                = $False
         PicoComPort          = "AUTO"
         WowInstallPath       = "AUTO"
-        QuestXpModifier      = 0
 
         PrimaryKeybind       = "F12"
         FailsafeKeybind      = "F11"
@@ -544,7 +543,6 @@ function Start-App {
         '-usePi', ($settings.UsePi -eq $true),
         '-picoComPort', (ConvertTo-CliArg $settings.PicoComPort),
         '-wowInstallPath', (ConvertTo-CliArg $settings.WowInstallPath),
-        '-questXpModifier', [int]$settings.QuestXpModifier,
         '-PrimaryKeybind', (ConvertTo-CliArg $settings.PrimaryKeybind),
         '-FailsafeKeybind', (ConvertTo-CliArg $settings.FailsafeKeybind),
         '-logout', (ConvertTo-CliArg $settings.Logout),
@@ -778,7 +776,7 @@ function Show-AdvancedSettingsDialog {
     $dlg = New-Object System.Windows.Window
     $dlg.Title                 = "Advanced Settings"
     $dlg.Width                 = 640
-    $dlg.Height                = 830
+    $dlg.Height                = 800
     $dlg.MinWidth              = 480
     $dlg.MinHeight             = 550
     $dlg.WindowStartupLocation = "CenterOwner"
@@ -880,9 +878,6 @@ function Show-AdvancedSettingsDialog {
     [void]$wowInstallPathPanel.Children.Add($ctrls.WowInstallPath)
     [void]$wowInstallPathPanel.Children.Add($browseWowPathBtn)
     New-FieldRow -Parent $sec -LabelText "WoW install path:" -Control $wowInstallPathPanel -Tooltip "Folder where World of Warcraft is installed eg, 'C:\Program Files\World of Warcraft', or 'AUTO' to detect it automatically."
-
-    $ctrls.QuestXpModifier = New-DarkTextBox -Text ([string]$settings.QuestXpModifier) -Width 60 -MaxLength 5
-    New-FieldRow -Parent $sec -LabelText "Quest XP Modifier (%):" -Control $ctrls.QuestXpModifier -Tooltip "Percentage XP bonus (eg: warmode, warband, etc) added on top of the base quest XP when estimating leveling ETAs. Use 0 for no bonus."
 
     # Keybinds
     $sec = New-Section "Keybinds"
@@ -1007,7 +1002,6 @@ function Show-AdvancedSettingsDialog {
         $settings.UsePi                = $ctrls.UsePi.IsChecked -eq $true
         $settings.PicoComPort          = if ($ctrls.PicoComPort.Text) { $ctrls.PicoComPort.Text } else { "AUTO" }
         $settings.WowInstallPath       = if ($ctrls.WowInstallPath.Text) { $ctrls.WowInstallPath.Text } else { "AUTO" }
-        $settings.QuestXpModifier      = if ($ctrls.QuestXpModifier.Text -match '^-?\d+$') { [int]$ctrls.QuestXpModifier.Text } else { 0 }
         $settings.PrimaryKeybind       = $ctrls.PrimaryKeybind.Text
         $settings.FailsafeKeybind      = $ctrls.FailsafeKeybind.Text
         $settings.Logout               = $ctrls.Logout.Text
@@ -1352,7 +1346,7 @@ function New-StatLine {
 
 $currentLevelText    = New-StatLine "Current level:    -"
 $questsCompletedText = New-StatLine "Quests completed: -"
-$avgTimePerQuestText = New-StatLine "Avg time/quest:   -"
+$lastQuestTimeText   = New-StatLine "Time per quest:   -"
 $etaNextLevelText    = New-StatLine "ETA next level:   -"
 $etaMaxLevelText     = New-StatLine "ETA max level:    -"
 
@@ -1361,7 +1355,7 @@ function Update-Stats {
     param($Evt)
     if ($null -ne $Evt.currentLevel)    { $currentLevelText.Text    = "Current level:    $($Evt.currentLevel)" }
     if ($null -ne $Evt.questsCompleted) { $questsCompletedText.Text = "Quests completed: $($Evt.questsCompleted)" }
-    if ($null -ne $Evt.avgTimePerQuest) { $avgTimePerQuestText.Text = "Avg time/quest:   $($Evt.avgTimePerQuest)" }
+    if ($null -ne $Evt.lastQuestTime)   { $lastQuestTimeText.Text   = "Time per quest:   $($Evt.lastQuestTime)" }
     if ($null -ne $Evt.etaNextLevel)    { $etaNextLevelText.Text    = "ETA next level:   $($Evt.etaNextLevel)" }
     if ($null -ne $Evt.etaMaxLevel)     { $etaMaxLevelText.Text     = "ETA max level:    $($Evt.etaMaxLevel)" }
 }
@@ -1370,7 +1364,7 @@ function Update-Stats {
 function Reset-Stats {
     $currentLevelText.Text    = "Current level:    -"
     $questsCompletedText.Text = "Quests completed: -"
-    $avgTimePerQuestText.Text = "Avg time/quest:   -"
+    $lastQuestTimeText.Text   = "Time per quest:   -"
     $etaNextLevelText.Text    = "ETA next level:   -"
     $etaMaxLevelText.Text     = "ETA max level:    -"
 }
