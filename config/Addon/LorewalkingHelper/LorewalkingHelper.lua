@@ -136,6 +136,7 @@ end
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 eventFrame:RegisterEvent("PLAYER_XP_UPDATE")
@@ -224,9 +225,13 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
 		SLASH_LOREWALKINGHELPER2 = "/lorewalking"
 
 		-- block guild invites for unwanted popups
+		-- maybe add code someday to hide/block party invites as well
 		SetAutoDeclineGuildInvites(true)
-	end
 
+	elseif event == "PLAYER_LOGOUT" then
+		-- undo click to move
+		C_CVar.SetCVar("autointeract", 0)
+	end
 
 	if event == "PLAYER_XP_UPDATE" then
 		local curlevel = UnitLevel("player")
