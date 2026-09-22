@@ -89,7 +89,12 @@ $onError              = ConvertTo-Bool $onError
 $onLevelUp            = ConvertTo-Bool $onLevelUp
 $useMyOwnCoordinates  = ConvertTo-Bool $useMyOwnCoordinates
 
-
+# Allow only one instance of the script
+$script:singleInstanceMutex = New-Object System.Threading.Mutex($false, 'Global\LorewalkingHelper')
+if (-not $script:singleInstanceMutex.WaitOne(0)) {
+    [Console]::Error.WriteLine("Another Lorewalking Helper instance is already running. Close it before starting a new one.")
+    exit 1
+}
 #Region Helper functions
 
 # Emits a single structured JSON line to stdout for the GUI to parse
@@ -154,7 +159,7 @@ function Update-LevelingStats {
     Write-GuiEvent -Evt @{
         type            = 'stats'
         currentLevel    = $script:currentLevel
-        questsCompleted = "$script:count (${Script:xpPerQuest}/xp per q)"
+        questsCompleted = "$script:count (${Script:xpPerQuest}xp/per)"
         lastQuestTime   = $script:lastQuestTimeText
         etaNextLevel    = $script:etaNextLevel
         etaMaxLevel     = $script:etaMaxLevel
@@ -268,7 +273,7 @@ function Send-Notification {
         title       = $Title
         color       = [int]$Color
         footer = @{
-            text = "$Env:ComputerName"
+            text = "$Env:ComputerName (started $($runStartTime.ToString('HH:mm:ss')))"
         }
         timestamp = (Get-Date).ToUniversalTime().ToString("o")
     }
@@ -428,8 +433,10 @@ function Get-RunningTime {
 function Invoke-AutoStop {
     if ( ($script:maxLevel -eq $True) -or ($autoStop -and ((Get-Date) -gt $autoEndTime)) -or ($script:failsafeTriggered -gt 3) ) {
         # end script
+        $ranFor = Get-RunningTime
         if ($script:maxLevel -ne $True -and ($autoStop -and ((Get-Date) -gt $autoEndTime)) -and ($script:failsafeTriggered -le 3)) {
             Write-AppLog "Time Limit Reached - Lorewalking Stopped" -ForegroundColor Yellow
+            Write-AppLog "Ran for: $ranFor"
             Update-LevelingStats
             Send-Notification -Title "Lorewalking Stopped" -Desc "AutoStop time reached after $($autoStopTime)m" -Runtime $ranFor `
                               -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
@@ -963,11 +970,11 @@ function Start-Lorewalking {
         Clear-AppLog
         $script:lastQuestTime = (Get-Date) - $script:loopStartTime
         $script:count++
+        $ranFor = Get-RunningTime
         Update-LevelingStats
         # needs 1 itteration to get quest time for stats
         if ($script:count -eq 1 -and $script:firstStat -eq $True) {
             if ($enableNotifications -and $onStart) {
-            $ranFor = Get-RunningTime
             Send-Notification -Title "Lorewalking Stats" -Desc "Initial stats and ETA's" -Runtime $ranFor `
                               -CurrentLevel $script:currentLevel -QuestsCompleted $script:count -LastQuestTime $script:lastQuestTimeText `
                               -EtaNextLevel $script:etaNextLevel -EtaMaxLevel $script:etaMaxLevel -Color 'Green'
@@ -1123,11 +1130,6 @@ Write-AppLog "Note: If you restart wow while this app is running, you need to st
 Write-AppLog "Stand in front of Lorewalker Li Li and make sure the WoW window is visible." -ForegroundColor Yellow
 Start-SleepWithProgress 10 "Lorewalking Starts in"
 
-# send start notification
-if ($enableNotifications -and $onStart) {
-    Send-Notification -Title 'Lorewalking started' -Color 'Green'
-}
-
 if ($autoStop -eq $True) {
     $autoEndTime = (Get-Date).AddMinutes($autoStopTime)
 } else {
@@ -1136,8 +1138,14 @@ if ($autoStop -eq $True) {
 #Endregion Main
 
 # Run it
-$runStartTime = Get-Date
 $script:firstUpdate = $True
 $script:firstStat = $True
 $script:count = 0
+$runStartTime = Get-Date
+
+# send start notification
+if ($enableNotifications -and $onStart) {
+    Send-Notification -Title 'Lorewalking started' -Color 'Green'
+}
+
 Start-Lorewalking

@@ -137,7 +137,9 @@ Try {
 
 $settingsFile          = Join-Path $scriptRoot "LorewalkingHelperSettings.json"
 $loreWalkingScriptFile = Join-Path $scriptRoot "LorewalkingHelper.ps1"
-$addonPath             = Join-Path $scriptRoot "Addon" "LorewalkingHelper"
+# nested Join-Path calls: the 3-argument form doesn't exist in Windows PowerShell 5.1
+$addonPath             = Join-Path (Join-Path $scriptRoot "Addon") "LorewalkingHelper"
+$addonFileNames        = @("LorewalkingHelper.lua", "LorewalkingHelper.toc")
 
 # Default values
 function Get-DefaultSettings {
@@ -207,45 +209,64 @@ function Export-Settings {
 
 # Install LorewalkerHelper addon
 function Install-Addon {
-    #check/get install path
-    $goodToInstall = $False
+    $pathNotFoundMessage = "Wow Install path not detected!`nManually set the path in the advanced settings and try running this again."
+
+    # check/get install path
     $wowInstallPath = $settings.WowInstallPath
-    if ($wowInstallPath -eq "AUTO") {
-        $wowInstallPath = 'HKLM:\SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft'
-    }
-    if (Test-Path $wowInstallPath) {
-        if ($wowInstallPath -eq 'HKLM:\SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft') {
-            $actualInstallPath = (Get-ItemProperty $wowInstallPath -ErrorAction SilentlyContinue).installPath
-            if ($null -ne $actualInstallPath) {
-                $goodToInstall = $True
-            } else {
-                Show-Popup -Message "Wow Install path not detected!`nManually set the path in the $lorewalkingScriptFile file and try running this again." -Title "Path Not Found" -Icon "Warning"
-            }
-        } else {
-            $actualInstallPath = Join-Path $wowInstallPath "_retail_"
-            $goodToInstall = $True
-        }
+    if ([string]::IsNullOrWhiteSpace($wowInstallPath) -or $wowInstallPath -eq "AUTO") {
+        $regPath = 'HKLM:\SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft'
+        $actualInstallPath = (Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue).InstallPath
     } else {
-        Show-Popup -Message "Wow Install path not detected!`nManually set the path in the $lorewalkingScriptFile file and try running this again." -Title "Path Not Found" -Icon "Warning"
+        $wowInstallPath = $wowInstallPath.Trim().TrimEnd('\')
+        # accept either the WoW root folder or the _retail_ folder itself
+        $actualInstallPath = if ((Split-Path -Leaf $wowInstallPath) -eq '_retail_') {
+            $wowInstallPath
+        } else {
+            Join-Path $wowInstallPath "_retail_"
+        }
     }
 
-    if ($goodToInstall -eq $True) {
-        if (Test-Path $addonPath) {
-            # copy local addon files to wow addon path if they need updating
-            $existingAddonLuaHash = Get-FileHash -Algorithm MD5 -Path "$actualInstallPath\Interface\AddOns\LorewalkingHelper\LorewalkingHelper.lua"
-            $existingAddonTocHash = Get-FileHash -Algorithm MD5 -Path "$actualInstallPath\Interface\AddOns\LorewalkingHelper\LorewalkingHelper.toc"
-            $addonLuaHash = Get-FileHash -Algorithm MD5 -Path "$addonPath\LorewalkingHelper.lua"
-            $addonTocHash = Get-FileHash -Algorithm MD5 -Path "$addonPath\LorewalkingHelper.toc"
-            if ($addonLuaHash.Hash -eq $existingAddonLuaHash.Hash -and $addonTocHash.Hash -eq $existingAddonTocHash.Hash) {
-                return
-            } else {
-                Copy-Item -Path $addonPath -Destination "$actualInstallPath\Interface\AddOns" -Recurse -Force
-                Show-Popup -Message "Perform a /reload if you already have WoW running." -Title "Addon files updated!" -Icon "Info"
-            }
-        } else {
-            Show-Popup -Message "Check that you downloaded all files for this app." -Title "Addon files not found!" -Icon "Error"
-        }
+    if ([string]::IsNullOrWhiteSpace($actualInstallPath)) {
+        Show-Popup -Message $pathNotFoundMessage -Title "Path Not Found" -Icon "Warning"
+        return
     }
+    $actualInstallPath = $actualInstallPath.Trim().TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $actualInstallPath)) {
+        Show-Popup -Message "$pathNotFoundMessage`n`nTried: $actualInstallPath" -Title "Path Not Found" -Icon "Warning"
+        return
+    }
+
+    $sourceFiles = $addonFileNames | ForEach-Object { Join-Path $addonPath $_ }
+    $missing = @($sourceFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if (-not (Test-Path -LiteralPath $addonPath) -or $missing.Count -gt 0) {
+        Show-Popup -Message "Check that you downloaded all files for this app.`n`nExpected in: $addonPath" -Title "Addon files not found!" -Icon "Error"
+        return
+    }
+
+    $destAddonPath = Join-Path $actualInstallPath "Interface\AddOns\LorewalkingHelper"
+
+    # copy local addon files to wow addon path if they're missing or out of date
+    $needsUpdate = $false
+    foreach ($source in $sourceFiles) {
+        $dest = Join-Path $destAddonPath (Split-Path -Leaf $source)
+        if (-not (Test-Path -LiteralPath $dest)) { $needsUpdate = $true; break }
+        $sourceHash = (Get-FileHash -Algorithm MD5 -LiteralPath $source -ErrorAction SilentlyContinue).Hash
+        $destHash   = (Get-FileHash -Algorithm MD5 -LiteralPath $dest   -ErrorAction SilentlyContinue).Hash
+        if ($null -eq $sourceHash -or $sourceHash -ne $destHash) { $needsUpdate = $true; break }
+    }
+    if (-not $needsUpdate) { return }
+
+    try {
+        if (-not (Test-Path -LiteralPath $destAddonPath)) {
+            [void](New-Item -ItemType Directory -Path $destAddonPath -Force -ErrorAction Stop)
+        }
+        Copy-Item -LiteralPath $sourceFiles -Destination $destAddonPath -Force -ErrorAction Stop
+    } catch {
+        Show-Popup -Message "Could not copy the addon files to:`n$destAddonPath`n`n$_`n`nIf this is an access denied error, close WoW and/or run this app as administrator." -Title "Addon install failed" -Icon "Error"
+        return
+    }
+
+    Show-Popup -Message "Perform a /reload if you already have WoW running." -Title "Addon files updated!" -Icon "Info"
 }
 
 # Main window
