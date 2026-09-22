@@ -200,8 +200,6 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
 			C_CVar.SetCVar("autointeract", 1)
 			-- enable interact key. I don't disable it later, the user can do that themselves if they want
 			C_CVar.SetCVar("SoftTargetInteract", "3")
-			-- block guild invites for unwanted popups
-			SetAutoDeclineGuildInvites(true)
 			-- reset view 4 to default to use later
 			ResetView(4)
 
@@ -224,6 +222,9 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         -- re-register my slash prefixes
         SLASH_LOREWALKINGHELPER1 = "/lw"
 		SLASH_LOREWALKINGHELPER2 = "/lorewalking"
+
+		-- block guild invites for unwanted popups
+		SetAutoDeclineGuildInvites(true)
 	end
 
 
